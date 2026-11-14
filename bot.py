@@ -39,7 +39,7 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.job_queue.run_daily(
         send_reminder,
-        time=time(hour=22, minute=15, tzinfo=ZoneInfo("Asia/Tashkent"))
+        time=time(hour=17, minute=30, tzinfo=ZoneInfo("Asia/Tashkent"))
     )
     print("Bot ishga tushdi...")
     await app.initialize()
