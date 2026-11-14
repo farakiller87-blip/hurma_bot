@@ -15,13 +15,13 @@ import asyncio
 from datetime import time
 from telegram.ext import Application
 
-TOKEN = "9229454847:AAEhknEgYb_fhfrN15y_4uoZaRq8RfVBfQA"
+TOKEN = "9229454847:AAHyPqfSQ21TjM9cspaM_pztPDH2M3X3e1k"
 CHAT_ID = -1002069130276
 
 async def send_reminder(context):
     text = (
         "⏰ Диққат, Hurma жамоаси!\n\n"
-        "Соат 21:13 бўлди.\n"
+        "Соат 21:20 бўлди.\n"
         "Илтимос, барча БЎШ АРИЗАЛАРНИ ёпиб чиқинг.\n"
         "Очиқ қолган ариза қолмасин!\n\n"
         "✅ Ёпганингиздан сўнг шу ерда ✅ белгиси билан тасдиқланг."
