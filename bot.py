@@ -11,17 +11,23 @@ def _run_server():
     HTTPServer(("0.0.0.0", port), H).serve_forever()
 
 threading.Thread(target=_run_server, daemon=True).start()
+
 import asyncio
 from datetime import time
-from telegram.ext import Application
+from zoneinfo import ZoneInfo
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-TOKEN = "9229454847:AAHyPqfSQ21TjM9cspaM_pztPDH2M3X3e1k"
+TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = -1002069130276
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Салом! Бот ишлаяпти ✅\nЭслатма ҳар куни 17:30 да келади.")
 
 async def send_reminder(context):
     text = (
         "⏰ Диққат, Hurma жамоаси!\n\n"
-        "Соат 21:24 бўлди.\n"
+        "Соат 21:45 бўлди.\n"
         "Илтимос, барча БЎШ АРИЗАЛАРНИ ёпиб чиқинг.\n"
         "Очиқ қолган ариза қолмасин!\n\n"
         "✅ Ёпганингиздан сўнг шу ерда ✅ белгиси билан тасдиқланг."
@@ -30,12 +36,16 @@ async def send_reminder(context):
 
 async def main():
     app = Application.builder().token(TOKEN).build()
-    app.job_queue.run_daily(send_reminder, time=time(hour=17, minute=30))
+    app.add_handler(CommandHandler("start", start))
+    app.job_queue.run_daily(
+        send_reminder,
+        time=time(hour=17, minute=30, tzinfo=ZoneInfo("Asia/Tashkent"))
+    )
     print("Bot ishga tushdi...")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
     await asyncio.Event().wait()
 
-if __name__ == "__main__":
+if "__name__" == "__main__":
     asyncio.run(main())
