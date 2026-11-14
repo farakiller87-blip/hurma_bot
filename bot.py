@@ -22,12 +22,12 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = -1002069130276
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Салом! Бот ишлаяпти ✅\nЭслатма ҳар куни 21:45 да келади.")
+    await update.message.reply_text("Салом! Бот ишлаяпти ✅\nЭслатма ҳар куни 21:55 да келади.")
 
 async def send_reminder(context):
     text = (
         "⏰ Диққат, Hurma жамоаси!\n\n"
-        "Соат 21:45 бўлди.\n"
+        "Соат 21:55 бўлди.\n"
         "Илтимос, барча БЎШ АРИЗАЛАРНИ ёпиб чиқинг.\n"
         "Очиқ қолган ариза қолмасин!\n\n"
         "✅ Ёпганингиздан сўнг шу ерда ✅ белгиси билан тасдиқланг."
@@ -47,5 +47,5 @@ async def main():
     await app.updater.start_polling()
     await asyncio.Event().wait()
 
-if "__name__" == "__main__":
+if __name__ == "__main__":
     asyncio.run(main())
