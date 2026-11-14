@@ -22,12 +22,12 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = -1002069130276
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Салом! Бот ишлаяпти ✅\nЭслатма ҳар куни 21:55 да келади.")
+    await update.message.reply_text("Салом! Бот ишлаяпти ✅\nЭслатма ҳар куни 17:30 да келади.")
 
 async def send_reminder(context):
     text = (
         "⏰ Диққат, Hurma жамоаси!\n\n"
-        "Соат 21:55 бўлди.\n"
+        "Соат 17:30 бўлди.\n"
         "Илтимос, барча БЎШ АРИЗАЛАРНИ ёпиб чиқинг.\n"
         "Очиқ қолган ариза қолмасин!\n\n"
         "✅ Ёпганингиздан сўнг шу ерда ✅ белгиси билан тасдиқланг."
