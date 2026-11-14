@@ -22,7 +22,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = -1002069130276
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Салом! Бот ишлаяпти ✅\nЭслатма ҳар куни 17:30 да келади.")
+    await update.message.reply_text("Салом! Бот ишлаяпти ✅\nЭслатма ҳар куни 21:45 да келади.")
 
 async def send_reminder(context):
     text = (
