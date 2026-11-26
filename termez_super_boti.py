@@ -4,7 +4,8 @@
 # To'lov: Click / Payme / Naqd
 # Shahar: Termez + yaqin tumanlar
 
-import os, asyncio
+import os, asyncio, threading
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -293,27 +294,53 @@ def build_app():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     return app
 
-def main():
-    # Python 3.14 da get_event_loop() ishlamaydi, loop ni o'zimiz yaratamiz
+
+# ---------- RENDER BEPUL WEB SERVICE + UPTIMEROBOT UCHUN - FLASK WEBHOOK ----------
+# Muammo: PTB ning run_webhook() i GET / ga 404 beradi.
+# UptimeRobot GET / ni tekshiradi, shuning uchun doim "Down" ko'rsatadi.
+# Yechim: Flask ni o'zimiz yuritamiz:
+#   GET / -> 200 OK (UptimeRobot yashil bo'ladi, Render uyg'onadi)
+#   POST /TOKEN -> Telegram xabari botga tushadi
+
+flask_app = Flask(__name__)
+bot_loop = None
+telegram_app = None
+
+@flask_app.route("/", methods=["GET"])
+def health():
+    return "Termez Super Boti ishlayapti ✅", 200
+
+@flask_app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
     try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-    app = build_app()
+        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+        asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), bot_loop)
+    except Exception as e:
+        print("Webhook xato:", e)
+    return "OK", 200
+
+def run_bot_loop():
+    global bot_loop, telegram_app
+    bot_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(bot_loop)
+    telegram_app = build_app()
+    bot_loop.run_until_complete(telegram_app.initialize())
+    bot_loop.run_until_complete(telegram_app.start())
+    if WEBHOOK_URL:
+        bot_loop.run_until_complete(telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/{TOKEN}", drop_pending_updates=True))
+        print(f"Webhook rejim: {WEBHOOK_URL} - ishga tushdi")
+    bot_loop.run_forever()
+
+def main():
     port = int(os.environ.get("PORT", 10000))
     if WEBHOOK_URL:
-        # Bepul Web Service - to'g'ri yo'l
-        print(f"Webhook rejim: {WEBHOOK_URL}/{TOKEN}")
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=TOKEN,
-            webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
-            drop_pending_updates=True,
-        )
+        # Render bepul Web Service
+        threading.Thread(target=run_bot_loop, daemon=True).start()
+        flask_app.run(host="0.0.0.0", port=port)
     else:
-        # Kompyuterda test qilish uchun - WEBHOOK_URL bo'lmasa polling
+        # Kompyuterda test - polling
         print("WEBHOOK_URL yo'q, kompyuterda polling bilan ishlayapti...")
+        app = build_app()
         app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
