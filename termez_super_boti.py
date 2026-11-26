@@ -103,6 +103,8 @@ def main_menu():
         [InlineKeyboardButton("🛠 Xizmatlar / Usta", callback_data="cat_xizmat")],
         [InlineKeyboardButton("🚕 Taksi", callback_data="cat_taksi")],
         [InlineKeyboardButton("📢 E'lonlar bozori", callback_data="cat_elon")],
+        [InlineKeyboardButton("🛒 Tovarlar ro'yxati", callback_data="mijoz_tovarlar")],
+        [InlineKeyboardButton("🧺 Savatim", callback_data="mijoz_savat")],
         [InlineKeyboardButton("📦 Buyurtmalarim", callback_data="my_orders")],
         [InlineKeyboardButton("👤 Kabinet / Ro'yxatdan o'tish", callback_data="cabinet")],
     ])
@@ -152,13 +154,150 @@ async def back_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("Asosiy menyu:", reply_markup=main_menu())
 
 async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Mijoz lokatsiya yuborganda - yetkazib berish narxini hisoblash uchun
+    # Agar mijoz buyurtma berayotgan bo'lsa - lokatsiyani manzil qilib olish
+    if context.user_data.get("checkout_step") == "manzil":
+        loc = update.message.location
+        await mijoz_create_order(update, context, f"📍 Lokatsiya: {loc.latitude}, {loc.longitude}")
+        return
     loc = update.message.location
     await update.message.reply_text(
         f"📍 Joylashuvingiz qabul qilindi: {loc.latitude}, {loc.longitude}\n\nEndi buyurtmani tanlang, yetkazib berish narxi masofaga qarab hisoblanadi:\n1-2 km - 10 000 so'm\n2-5 km - 15 000 so'm\n5 km dan ortiq - kelishilgan narx",
         reply_markup=main_menu()
     )
 
+
+
+# ============================================================
+# MIJOZ BUYURTMA BERISH - Savat + Lokatsiya + Buyurtma
+# ============================================================
+# Mijoz: Tovarlar -> Savatga qo'shish -> Savat -> Buyurtma berish
+# -> Lokatsiya / Manzil yozish -> Buyurtma do'konchiga tushadi (holat=yangi)
+
+def mijoz_get_savat(context):
+    if "savat" not in context.user_data or not isinstance(context.user_data.get("savat"), dict):
+        context.user_data["savat"] = {}
+    return context.user_data["savat"]
+
+async def mijoz_tovarlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if not TOVARLAR:
+        await q.edit_message_text("Hozircha tovar yo'q. Do'konchi avval tovar qo'shishi kerak.\n\nTest uchun: do'konchi bo'lib tovar qo'shing, keyin bu yerga qayting.", reply_markup=main_menu())
+        return
+    txt = "🛒 <b>Tovarlar:</b>\n\nTanlang - savatga qo'shiladi:\n"
+    kb = []
+    for tid, v in TOVARLAR.items():
+        if not v.get("mavjud", True):
+            continue
+        txt += f"{tid}. {v['nomi']} - {v['narxi']:,} so'm\n"
+        kb.append([InlineKeyboardButton(f"➕ {v['nomi']} - {v['narxi']:,} so'm", callback_data=f"mijoz_add_{tid}")])
+    kb.append([InlineKeyboardButton("🧺 Savatim", callback_data="mijoz_savat")])
+    kb.append([InlineKeyboardButton("⬅️ Asosiy menyu", callback_data="back_main")])
+    await q.edit_message_text(txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+
+async def mijoz_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    tid = int(q.data.replace("mijoz_add_", ""))
+    if tid not in TOVARLAR:
+        await q.edit_message_text("Tovar topilmadi.", reply_markup=main_menu())
+        return
+    savat = mijoz_get_savat(context)
+    savat[tid] = savat.get(tid, 0) + 1
+    v = TOVARLAR[tid]
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Yana qo'shish", callback_data=f"mijoz_add_{tid}")],
+        [InlineKeyboardButton("🧺 Savatni ko'rish", callback_data="mijoz_savat")],
+        [InlineKeyboardButton("🛒 Tovarlar", callback_data="mijoz_tovarlar")],
+    ])
+    await q.edit_message_text(f"✅ Savatga qo'shildi!\n\n{v['nomi']} - {v['narxi']:,} so'm\nSavatda bu tovardan: {savat[tid]} ta", reply_markup=kb)
+
+async def mijoz_savat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    savat = mijoz_get_savat(context)
+    if not savat:
+        await q.edit_message_text("🧺 Savatingiz bo'sh.\n\n🛒 Tovarlar ro'yxatidan tanlang.", reply_markup=main_menu())
+        return
+    txt = "🧺 <b>Savatingiz:</b>\n\n"
+    total = 0
+    for tid, qty in savat.items():
+        if tid not in TOVARLAR:
+            continue
+        v = TOVARLAR[tid]
+        txt += f"{v['nomi']} x {qty} = {v['narxi'] * qty:,} so'm\n"
+        total += v['narxi'] * qty
+    txt += f"\n<b>Jami: {total:,} so'm</b>\nYetkazib berish: 10 000 - 15 000 so'm (alohida)"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Buyurtma berish", callback_data="mijoz_checkout")],
+        [InlineKeyboardButton("🗑 Savatni tozalash", callback_data="mijoz_clear")],
+        [InlineKeyboardButton("🛒 Tovarlar", callback_data="mijoz_tovarlar")],
+        [InlineKeyboardButton("⬅️ Asosiy menyu", callback_data="back_main")],
+    ])
+    await q.edit_message_text(txt, parse_mode="HTML", reply_markup=kb)
+
+async def mijoz_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["savat"] = {}
+    await q.edit_message_text("🗑 Savat tozalandi.", reply_markup=main_menu())
+
+async def mijoz_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    savat = mijoz_get_savat(context)
+    if not savat:
+        await q.edit_message_text("Savat bo'sh.", reply_markup=main_menu())
+        return
+    context.user_data["checkout_step"] = "manzil"
+    # Lokatsiya tugmasi - mijoz bosib joyini yuboradi
+    loc_kb = ReplyKeyboardMarkup([[KeyboardButton("📍 Lokatsiyani yuborish", request_location=True)]], resize_keyboard=True, one_time_keyboard=True)
+    await q.message.reply_text("📍 <b>Manzilingizni yuboring:</b>\n\n1-usul: Pastdagi 📍 Lokatsiyani yuborish tugmasini bosing\n2-usul: Manzilni yozing. Masalan: <i>Termez, Alisher Navoiy 12</i>", parse_mode="HTML", reply_markup=loc_kb)
+
+async def mijoz_create_order(update, context, manzil):
+    savat = mijoz_get_savat(context)
+    if not savat:
+        await update.message.reply_text("Savat bo'sh.", reply_markup=main_menu())
+        return
+    # Har bir do'kon uchun alohida buyurtma (bitta savatda 2 do'kon bo'lsa)
+    by_dokon = {}
+    for tid, qty in savat.items():
+        if tid not in TOVARLAR:
+            continue
+        v = TOVARLAR[tid]
+        by_dokon.setdefault(v["dokon_id"], []).append((v, qty))
+    created = []
+    for dokon_id, items in by_dokon.items():
+        BUYURTMA_ID[0] += 1
+        oid = BUYURTMA_ID[0]
+        tovar_txt = ", ".join([f"{v['nomi']} x {qty}" for v, qty in items])
+        total = sum([v['narxi'] * qty for v, qty in items])
+        BUYURTMALAR[oid] = {"mijoz_id": update.message.from_user.id, "dokon_id": dokon_id, "tovarlar": tovar_txt, "summa": total, "holat": "yangi", "kuryer_id": None, "manzil": manzil}
+        created.append(oid)
+    context.user_data["savat"] = {}
+    context.user_data["checkout_step"] = None
+    try:
+        db_save()
+    except Exception:
+        pass
+    await update.message.reply_text(
+        f"✅ <b>Buyurtmangiz qabul qilindi!</b>\n\nBuyurtma №: {', '.join(['#' + str(x) for x in created])}\nManzil: {manzil}\nDo'kon tasdiqlagach, kuryer yetkazib beradi.\nHolatni 📦 Buyurtmalarim dan kuzating.",
+        parse_mode="HTML", reply_markup=main_menu()
+    )
+
+async def mijoz_my_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    my = [(k, v) for k, v in BUYURTMALAR.items() if v.get("mijoz_id") == uid]
+    if not my:
+        await q.edit_message_text("📦 Hozircha buyurtmangiz yo'q.", reply_markup=main_menu())
+        return
+    holat_map = {"yangi": "🆕 Do'kon ko'ryapti", "qabul_qilindi": "✅ Do'kon qabul qildi, kuryer kutilmoqda", "kuryerda": "🛵 Kuryer oldi", "oldim": "🏪 Kuryer do'kondan oldi", "yoldaman": "🚀 Kuryer yolda", "yetkazildi": "✅ Yetkazildi", "rad_etildi": "❌ Rad etildi"}
+    txt = "📦 <b>Buyurtmalarim:</b>\n\n"
+    for k, v in sorted(my, reverse=True)[:10]:
+        txt += f"#{k} - {v.get('tovarlar','')} - {v.get('summa',0):,} so'm\nHolat: {holat_map.get(v.get('holat'), v.get('holat'))}\n\n"
+    await q.edit_message_text(txt, parse_mode="HTML", reply_markup=main_menu())
 
 
 # ============================================================
@@ -625,6 +764,14 @@ def build_app():
     app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(back_main, pattern="^back_main$"))
+    # Mijoz buyurtma
+    app.add_handler(CallbackQueryHandler(mijoz_tovarlar, pattern="^mijoz_tovarlar$"))
+    app.add_handler(CallbackQueryHandler(mijoz_add, pattern="^mijoz_add_"))
+    app.add_handler(CallbackQueryHandler(mijoz_savat, pattern="^mijoz_savat$"))
+    app.add_handler(CallbackQueryHandler(mijoz_clear, pattern="^mijoz_clear$"))
+    app.add_handler(CallbackQueryHandler(mijoz_checkout, pattern="^mijoz_checkout$"))
+    app.add_handler(CallbackQueryHandler(mijoz_my_orders, pattern="^my_orders$"))
+    app.add_handler(CallbackQueryHandler(mijoz_tovarlar, pattern="^sub_"))
     app.add_handler(CallbackQueryHandler(dokon_entry, pattern="^role_dokon$"))
     app.add_handler(CallbackQueryHandler(dokon_reg_start, pattern="^dokon_reg$"))
     app.add_handler(CallbackQueryHandler(dokon_cat_select, pattern="^dokon_cat_"))
@@ -650,6 +797,8 @@ def build_app():
             await dokon_reg_message(update, context)
         elif context.user_data.get("add_step"):
             await dokon_add_message(update, context)
+        elif context.user_data.get("checkout_step") == "manzil":
+            await mijoz_create_order(update, context, update.message.text)
         elif context.user_data.get("kuryer_step"):
             await kuryer_reg_message(update, context)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
