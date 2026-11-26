@@ -4,10 +4,93 @@
 # To'lov: Click / Payme / Naqd
 # Shahar: Termez + yaqin tumanlar
 
-import os, asyncio, threading
+import os, asyncio, threading, sqlite3, json, time
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+# ---------- BAZA: Postgres (asosiy) + SQLite (zaxira) ----------
+# Render'da DATABASE_URL bo'lsa -> Postgres ishlaydi (deploy'da ham o'chmaydi)
+# Kompyuterda DATABASE_URL yo'q bo'lsa -> termez.db (SQLite) ishlaydi
+# Ma'lumotlar har 30 soniyada avtomatik saqlanadi.
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "termez.db")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+def _db_data():
+    return {
+        "dokonchilar": {str(k): v for k, v in DOKONCHILAR.items()},
+        "tovarlar": {str(k): v for k, v in TOVARLAR.items()},
+        "buyurtmalar": {str(k): v for k, v in BUYURTMALAR.items()},
+        "kuryerlar": {str(k): v for k, v in KURYERLAR.items()},
+        "tovar_id": TOVAR_ID[0],
+        "buyurtma_id": BUYURTMA_ID[0],
+    }
+
+def _db_apply(rows):
+    if "dokonchilar" in rows:
+        DOKONCHILAR.clear(); DOKONCHILAR.update({int(k): v for k, v in json.loads(rows["dokonchilar"]).items()})
+    if "tovarlar" in rows:
+        TOVARLAR.clear(); TOVARLAR.update({int(k): v for k, v in json.loads(rows["tovarlar"]).items()})
+    if "buyurtmalar" in rows:
+        BUYURTMALAR.clear(); BUYURTMALAR.update({int(k): v for k, v in json.loads(rows["buyurtmalar"]).items()})
+    if "kuryerlar" in rows:
+        KURYERLAR.clear(); KURYERLAR.update({int(k): v for k, v in json.loads(rows["kuryerlar"]).items()})
+    if "tovar_id" in rows:
+        TOVAR_ID[0] = int(json.loads(rows["tovar_id"]))
+    if "buyurtma_id" in rows:
+        BUYURTMA_ID[0] = int(json.loads(rows["buyurtma_id"]))
+    print(f"DB: yuklandi - dokon {len(DOKONCHILAR)}, kuryer {len(KURYERLAR)}, buyurtma {len(BUYURTMALAR)}")
+
+def db_save():
+    try:
+        data = _db_data()
+        if DATABASE_URL:
+            import psycopg2
+            con = psycopg2.connect(DATABASE_URL)
+            cur = con.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)")
+            for k, v in data.items():
+                cur.execute("INSERT INTO kv (k, v) VALUES (%s, %s) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v", (k, json.dumps(v, ensure_ascii=False, default=str)))
+            con.commit(); con.close()
+        else:
+            con = sqlite3.connect(DB_PATH)
+            con.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)")
+            for k, v in data.items():
+                con.execute("INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)", (k, json.dumps(v, ensure_ascii=False, default=str)))
+            con.commit(); con.close()
+    except Exception as e:
+        print("DB save xato:", e)
+
+def db_load():
+    try:
+        if DATABASE_URL:
+            import psycopg2
+            con = psycopg2.connect(DATABASE_URL)
+            cur = con.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)")
+            cur.execute("SELECT k, v FROM kv")
+            rows = dict(cur.fetchall())
+            con.close()
+            if not rows:
+                print("DB: Postgres yangi, eski ma'lumot yoq")
+                return
+            _db_apply(rows)
+        else:
+            if not os.path.exists(DB_PATH):
+                print("DB: SQLite yangi, eski ma'lumot yoq")
+                return
+            con = sqlite3.connect(DB_PATH)
+            rows = dict(con.execute("SELECT k, v FROM kv").fetchall())
+            con.close()
+            _db_apply(rows)
+    except Exception as e:
+        print("DB load xato:", e)
+
+def db_autosave_loop():
+    while True:
+        time.sleep(30)
+        db_save()
+
 
 TOKEN = os.environ.get("BOT_TOKEN", "BOT_TOKENINGIZNI_SHU_YERGA_QOYING")
 
@@ -476,6 +559,62 @@ async def test_order_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   BOT_TOKEN = bot tokeni
 #   WEBHOOK_URL = https://hurma-bot.onrender.com  <- Render dagi sizning URL ingiz, oxirida / yo'q
 
+# ---------- BAZA: SQLite - ma'lumotlar o'chmaydi ----------
+# Oldin ma'lumotlar faqat xotirada (dict) edi - Render uxlab qolsa tozalanardi.
+# Endi har 30 soniyada termez.db fayliga yoziladi, ishga tushganda qayta o'qiladi.
+# Render bepulda fayl deploy qilinguncha saqlanadi (uxlashda o'chmaydi).
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "termez.db")
+
+def db_save():
+    try:
+        con = sqlite3.connect(DB_PATH)
+        con.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)")
+        data = {
+            "dokonchilar": {str(k): v for k, v in DOKONCHILAR.items()},
+            "tovarlar": {str(k): v for k, v in TOVARLAR.items()},
+            "buyurtmalar": {str(k): v for k, v in BUYURTMALAR.items()},
+            "kuryerlar": {str(k): v for k, v in KURYERLAR.items()},
+            "tovar_id": TOVAR_ID[0],
+            "buyurtma_id": BUYURTMA_ID[0],
+        }
+        for k, v in data.items():
+            con.execute("INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)", (k, json.dumps(v, ensure_ascii=False, default=str)))
+        con.commit()
+        con.close()
+    except Exception as e:
+        print("DB save xato:", e)
+
+def db_load():
+    try:
+        if not os.path.exists(DB_PATH):
+            print("DB: yangi baza, eski ma'lumot yoq")
+            return
+        con = sqlite3.connect(DB_PATH)
+        con.execute("CREATE TABLE IF NOT EXISTS kv (k, v TEXT)")
+        rows = dict(con.execute("SELECT k, v FROM kv").fetchall())
+        con.close()
+        if "dokonchilar" in rows:
+            DOKONCHILAR.clear(); DOKONCHILAR.update({int(k): v for k, v in json.loads(rows["dokonchilar"]).items()})
+        if "tovarlar" in rows:
+            TOVARLAR.clear(); TOVARLAR.update({int(k): v for k, v in json.loads(rows["tovarlar"]).items()})
+        if "buyurtmalar" in rows:
+            BUYURTMALAR.clear(); BUYURTMALAR.update({int(k): v for k, v in json.loads(rows["buyurtmalar"]).items()})
+        if "kuryerlar" in rows:
+            KURYERLAR.clear(); KURYERLAR.update({int(k): v for k, v in json.loads(rows["kuryerlar"]).items()})
+        if "tovar_id" in rows:
+            TOVAR_ID[0] = int(json.loads(rows["tovar_id"]))
+        if "buyurtma_id" in rows:
+            BUYURTMA_ID[0] = int(json.loads(rows["buyurtma_id"]))
+        print(f"DB: yuklandi - dokon {len(DOKONCHILAR)}, kuryer {len(KURYERLAR)}, buyurtma {len(BUYURTMALAR)}")
+    except Exception as e:
+        print("DB load xato:", e)
+
+def db_autosave_loop():
+    while True:
+        time.sleep(30)
+        db_save()
+
+
 TOKEN = os.environ.get("BOT_TOKEN", TOKEN)
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", os.environ.get("RENDER_EXTERNAL_URL", "")).rstrip("/")
 
@@ -732,6 +871,10 @@ async def test_order_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Faqat ko'rish uchun - tasdiqlash keyingi versiyada.
 
 def admin_stats():
+    try:
+        db_save()
+    except Exception:
+        pass
     orders = list(BUYURTMALAR.values())
     total_buyurtma = sum([o.get("summa",0) for o in orders])
     total_yetkazish = sum([o.get("yetkazish_narxi",0) for o in orders if o.get("holat")=="yetkazildi"])
@@ -817,6 +960,8 @@ def run_bot_loop():
     global bot_loop, telegram_app
     bot_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(bot_loop)
+    db_load()
+    threading.Thread(target=db_autosave_loop, daemon=True).start()
     telegram_app = build_app()
     bot_loop.run_until_complete(telegram_app.initialize())
     bot_loop.run_until_complete(telegram_app.start())
@@ -834,6 +979,7 @@ def main():
     else:
         # Kompyuterda test - polling
         print("WEBHOOK_URL yo'q, kompyuterda polling bilan ishlayapti...")
+        db_load()
         app = build_app()
         app.run_polling(drop_pending_updates=True)
 
