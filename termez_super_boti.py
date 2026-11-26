@@ -261,6 +261,213 @@ async def dokon_stats_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(f"📊 <b>Bugungi savdo</b>\n\nBuyurtmalar: {len(my_orders)} ta\nJami: {total:,} so'm", parse_mode="HTML", reply_markup=dokonchi_menu())
 
 
+# ============================================================
+# 2-BOSQICH: KURYER PANELI
+# ============================================================
+# Kuryer: ro'yxatdan o'tadi -> transport tanlaydi -> buyurtma oladi
+# -> do'kondan oldim -> yoldaman -> yetkazdim -> pulini ko'radi
+# Do'konchi qabul qilgan buyurtma (holat=qabul_qilindi) kuryerga chiqadi.
+
+KURYERLAR = {}  # user_id -> {ism, telefon, transport, online, tasdiqlandi, rasm_bor, yetkazgan, daromad}
+
+def kuryer_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Kuryer bo'lib ro'yxatdan o'tish", callback_data="kuryer_reg")],
+        [InlineKeyboardButton("🟢 Ishga chiqish / 🔴 To'xtatish", callback_data="kuryer_toggle")],
+        [InlineKeyboardButton("📦 Bo'sh buyurtmalar", callback_data="kuryer_free")],
+        [InlineKeyboardButton("🚀 Mening faol buyurtmam", callback_data="kuryer_active")],
+        [InlineKeyboardButton("💰 Mening daromadim", callback_data="kuryer_money")],
+        [InlineKeyboardButton("⬅️ Asosiy menyu", callback_data="back_main")],
+    ])
+
+def kuryer_transport_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚶 Piyoda - rasm shart emas", callback_data="kuryer_tr_Piyoda")],
+        [InlineKeyboardButton("🚲 Velosiped", callback_data="kuryer_tr_Velosiped")],
+        [InlineKeyboardButton("🛵 Moped / Skuter", callback_data="kuryer_tr_Moped")],
+        [InlineKeyboardButton("🚗 Avtomobil", callback_data="kuryer_tr_Avtomobil")],
+        [InlineKeyboardButton("⬅️ Orqaga", callback_data="role_kuryer")],
+    ])
+
+def delivery_fee_for(transport):
+    # Transportga qarab yetkazib berish narxi (1-5 km uchun o'rtacha)
+    return {"Piyoda": 10000, "Velosiped": 12000, "Moped": 13000, "Avtomobil": 15000}.get(transport, 10000)
+
+async def kuryer_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if uid in KURYERLAR:
+        k = KURYERLAR[uid]
+        await q.edit_message_text(
+            f"🛵 <b>{k['ism']}</b>\nTransport: {k['transport']}\nTelefon: {k['telefon']}\nHolat: {'🟢 Ishda' if k.get('online') else '🔴 Damda'}\nTasdiq: {'✅ Tasdiqlangan' if k.get('tasdiqlandi') else '⏳ Tasdiqlanmoqda'}\nYetkazgan: {k.get('yetkazgan',0)} ta\nDaromad: {k.get('daromad',0):,} so'm",
+            parse_mode="HTML", reply_markup=kuryer_menu()
+        )
+    else:
+        await q.edit_message_text(
+            "🛵 <b>Kuryer paneli</b>\n\nAvval ro'yxatdan o'ting.\n\nKerak: Ism, Telefon, Transport turi\nPiyodadan boshqalar uchun transport rasmi + admin tasdiqi kerak.",
+            parse_mode="HTML", reply_markup=kuryer_menu()
+        )
+
+async def kuryer_reg_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["kuryer_step"] = "ism"
+    await q.edit_message_text("📝 <b>Kuryer ro'yxati</b>\n\n1-qadam: Ismingizni yozing.\nMasalan: <i>Farrux</i>", parse_mode="HTML")
+
+async def kuryer_transport_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    tr = q.data.replace("kuryer_tr_", "")
+    context.user_data["kuryer_transport"] = tr
+    if tr == "Piyoda":
+        # Piyoda - rasm shart emas, darhol saqlash
+        uid = q.from_user.id
+        KURYERLAR[uid] = {"ism": context.user_data.get("kuryer_ism"), "telefon": context.user_data.get("kuryer_telefon"), "transport": tr, "online": False, "tasdiqlandi": True, "rasm_bor": False, "yetkazgan": 0, "daromad": 0}
+        context.user_data["kuryer_step"] = None
+        await q.edit_message_text(f"✅ Ro'yxatdan o'tdingiz!\n\n🛵 {context.user_data.get('kuryer_ism')} - {tr}\nEndi 🟢 Ishga chiqish ni bosing.", reply_markup=kuryer_menu())
+    else:
+        context.user_data["kuryer_step"] = "rasm"
+        await q.edit_message_text(f"Transport: <b>{tr}</b>\n\nEndi transport rasmini yuboring 📸\n(Moped / Velosiped / Avtomobil uchun rasm shart, admin tasdiqlaydi)", parse_mode="HTML")
+
+async def kuryer_reg_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    step = context.user_data.get("kuryer_step")
+    if not step:
+        return
+    text = (update.message.text or "").strip()
+    if step == "ism":
+        context.user_data["kuryer_ism"] = text
+        context.user_data["kuryer_step"] = "telefon"
+        await update.message.reply_text("2-qadam: Telefon raqamingizni yozing.\nMasalan: +998 90 123 45 67")
+    elif step == "telefon":
+        context.user_data["kuryer_telefon"] = text
+        context.user_data["kuryer_step"] = "transport"
+        await update.message.reply_text("3-qadam: Transport turini tanlang:", reply_markup=kuryer_transport_menu())
+
+async def kuryer_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Transport rasmi kelsa
+    if context.user_data.get("kuryer_step") != "rasm":
+        return
+    uid = update.message.from_user.id
+    tr = context.user_data.get("kuryer_transport", "Moped")
+    KURYERLAR[uid] = {"ism": context.user_data.get("kuryer_ism"), "telefon": context.user_data.get("kuryer_telefon"), "transport": tr, "online": False, "tasdiqlandi": False, "rasm_bor": True, "yetkazgan": 0, "daromad": 0}
+    context.user_data["kuryer_step"] = None
+    await update.message.reply_text(f"✅ Rasm qabul qilindi!\n\n🛵 {context.user_data.get('kuryer_ism')} - {tr}\nAriza adminga tushdi. Admin tasdiqlagach ishga chiqasiz. Hozircha test rejimida ishlash ochiq.", reply_markup=kuryer_menu())
+
+async def kuryer_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if uid not in KURYERLAR:
+        await q.edit_message_text("Avval ro'yxatdan o'ting.", reply_markup=kuryer_menu())
+        return
+    KURYERLAR[uid]["online"] = not KURYERLAR[uid].get("online", False)
+    hol = "🟢 Ishga chiqdingiz - endi buyurtmalar ko'rinadi" if KURYERLAR[uid]["online"] else "🔴 Ishdan to'xtadingiz"
+    await q.edit_message_text(hol, reply_markup=kuryer_menu())
+
+async def kuryer_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if uid not in KURYERLAR or not KURYERLAR[uid].get("online"):
+        await q.edit_message_text("Avval ro'yxatdan o'tib, 🟢 Ishga chiqish ni bosing.", reply_markup=kuryer_menu())
+        return
+    free = [(k, v) for k, v in BUYURTMALAR.items() if v.get("holat") == "qabul_qilindi" and not v.get("kuryer_id")]
+    if not free:
+        await q.edit_message_text("📦 Hozircha bo'sh buyurtma yo'q. Birozdan keyin yana tekshiring.", reply_markup=kuryer_menu())
+        return
+    txt = "📦 <b>Bo'sh buyurtmalar (do'kon qabul qilgan):</b>\n\n"
+    kb = []
+    fee = delivery_fee_for(KURYERLAR[uid]["transport"])
+    for k, v in free:
+        txt += f"#{k} - {v.get('tovarlar','')} - {v.get('summa',0):,} so'm\nYetkazib berish: {fee:,} so'm\n\n"
+        kb.append([InlineKeyboardButton(f"✅ Olish #{k}", callback_data=f"kuryer_take_{k}")])
+    kb.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="role_kuryer")])
+    await q.edit_message_text(txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+
+async def kuryer_take(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    oid = int(q.data.replace("kuryer_take_", ""))
+    if oid not in BUYURTMALAR:
+        await q.edit_message_text("Buyurtma topilmadi.", reply_markup=kuryer_menu())
+        return
+    if BUYURTMALAR[oid].get("kuryer_id"):
+        await q.edit_message_text("Bu buyurtmani boshqa kuryer olib bo'libdi.", reply_markup=kuryer_menu())
+        return
+    BUYURTMALAR[oid]["kuryer_id"] = uid
+    BUYURTMALAR[oid]["holat"] = "kuryerda"
+    fee = delivery_fee_for(KURYERLAR[uid]["transport"])
+    BUYURTMALAR[oid]["yetkazish_narxi"] = fee
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏪 Do'kondan oldim", callback_data=f"kuryer_status_oldim_{oid}")],
+        [InlineKeyboardButton("⬅️ Orqaga", callback_data="role_kuryer")],
+    ])
+    await q.edit_message_text(f"✅ Buyurtma #{oid} sizda!\n\n1. Do'konga boring\n2. Mahsulotni oling\n3. 'Do'kondan oldim' ni bosing\n\nYetkazib berish: {fee:,} so'm", reply_markup=kb)
+
+async def kuryer_active(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    active = [(k, v) for k, v in BUYURTMALAR.items() if v.get("kuryer_id") == uid and v.get("holat") in ("kuryerda", "oldim", "yoldaman")]
+    if not active:
+        await q.edit_message_text("Faol buyurtmangiz yo'q.", reply_markup=kuryer_menu())
+        return
+    k, v = active[0]
+    holat = v.get("holat")
+    if holat == "kuryerda":
+        btn = [InlineKeyboardButton("🏪 Do'kondan oldim", callback_data=f"kuryer_status_oldim_{k}")]
+    elif holat == "oldim":
+        btn = [InlineKeyboardButton("🚀 Yoldaman - mijozga ketyapman", callback_data=f"kuryer_status_yoldaman_{k}")]
+    else:
+        btn = [InlineKeyboardButton("✅ Yetkazdim", callback_data=f"kuryer_status_yetkazdim_{k}")]
+    await q.edit_message_text(f"🚀 <b>Faol buyurtma #{k}</b>\n\n{v.get('tovarlar','')} - {v.get('summa',0):,} so'm\nHolat: {holat}\nYetkazib berish: {v.get('yetkazish_narxi',0):,} so'm", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([btn, [InlineKeyboardButton("⬅️ Orqaga", callback_data="role_kuryer")]]))
+
+async def kuryer_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    # kuryer_status_oldim_1 / yoldaman_1 / yetkazdim_1
+    parts = q.data.split("_")  # ['kuryer','status','oldim','1']
+    action = parts[2]
+    oid = int(parts[3])
+    uid = q.from_user.id
+    if oid not in BUYURTMALAR:
+        await q.edit_message_text("Buyurtma topilmadi.", reply_markup=kuryer_menu())
+        return
+    if action == "oldim":
+        BUYURTMALAR[oid]["holat"] = "oldim"
+        await q.edit_message_text(f"🏪 Buyurtma #{oid} do'kondan olindi.\nEndi mijozga boring.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Yoldaman", callback_data=f"kuryer_status_yoldaman_{oid}")]]))
+    elif action == "yoldaman":
+        BUYURTMALAR[oid]["holat"] = "yoldaman"
+        await q.edit_message_text(f"🚀 Buyurtma #{oid} - yoldasiz.\nYetkazgach 'Yetkazdim' ni bosing.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yetkazdim", callback_data=f"kuryer_status_yetkazdim_{oid}")]]))
+    elif action == "yetkazdim":
+        BUYURTMALAR[oid]["holat"] = "yetkazildi"
+        fee = BUYURTMALAR[oid].get("yetkazish_narxi", 10000)
+        if uid in KURYERLAR:
+            KURYERLAR[uid]["yetkazgan"] = KURYERLAR[uid].get("yetkazgan", 0) + 1
+            KURYERLAR[uid]["daromad"] = KURYERLAR[uid].get("daromad", 0) + fee
+        await q.edit_message_text(f"✅ Buyurtma #{oid} yetkazildi!\n\n💰 Sizga: {fee:,} so'm qo'shildi.", reply_markup=kuryer_menu())
+
+async def kuryer_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if uid not in KURYERLAR:
+        await q.edit_message_text("Avval ro'yxatdan o'ting.", reply_markup=kuryer_menu())
+        return
+    k = KURYERLAR[uid]
+    await q.edit_message_text(f"💰 <b>Daromad</b>\n\nYetkazgan buyurtma: {k.get('yetkazgan',0)} ta\nJami daromad: {k.get('daromad',0):,} so'm\nTransport: {k['transport']}", parse_mode="HTML", reply_markup=kuryer_menu())
+
+
+async def test_order_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Faqat test uchun: /testbuyurtma yozsa, kuryer ko'rishi uchun 1 ta test buyurtma yaratadi
+    BUYURTMA_ID[0] += 1
+    oid = BUYURTMA_ID[0]
+    BUYURTMALAR[oid] = {"mijoz_id": update.message.from_user.id, "dokon_id": 0, "tovarlar": "Test - Lag'mon 1 ta", "summa": 35000, "holat": "qabul_qilindi", "kuryer_id": None}
+    await update.message.reply_text(f"🧪 Test buyurtma yaratildi: #{oid}\n\nEndi Kuryer paneli -> 📦 Bo'sh buyurtmalar ni bosing, shu buyurtma chiqishi kerak.")
+
+
 
 # ---------- RENDER BEPUL WEB SERVICE UCHUN - WEBHOOK ----------
 # Background Worker pullik, Web Service bepul.
@@ -275,6 +482,7 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL", os.environ.get("RENDER_EXTERNAL_URL"
 def build_app():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("testbuyurtma", test_order_cmd))
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(back_main, pattern="^back_main$"))
     app.add_handler(CallbackQueryHandler(dokon_entry, pattern="^role_dokon$"))
@@ -285,14 +493,234 @@ def build_app():
     app.add_handler(CallbackQueryHandler(dokon_orders_new, pattern="^dokon_orders_new$"))
     app.add_handler(CallbackQueryHandler(dokon_order_action, pattern="^order_(accept|reject)_"))
     app.add_handler(CallbackQueryHandler(dokon_stats_show, pattern="^dokon_stats$"))
+    # Kuryer - 2-bosqich
+    app.add_handler(CallbackQueryHandler(kuryer_entry, pattern="^role_kuryer$"))
+    app.add_handler(CallbackQueryHandler(kuryer_reg_start, pattern="^kuryer_reg$"))
+    app.add_handler(CallbackQueryHandler(kuryer_transport_select, pattern="^kuryer_tr_"))
+    app.add_handler(CallbackQueryHandler(kuryer_toggle, pattern="^kuryer_toggle$"))
+    app.add_handler(CallbackQueryHandler(kuryer_free, pattern="^kuryer_free$"))
+    app.add_handler(CallbackQueryHandler(kuryer_active, pattern="^kuryer_active$"))
+    app.add_handler(CallbackQueryHandler(kuryer_money, pattern="^kuryer_money$"))
+    app.add_handler(CallbackQueryHandler(kuryer_take, pattern="^kuryer_take_"))
+    app.add_handler(CallbackQueryHandler(kuryer_status, pattern="^kuryer_status_"))
     app.add_handler(MessageHandler(filters.LOCATION, location_handler))
+    app.add_handler(MessageHandler(filters.PHOTO, kuryer_photo_message))
     async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get("dokon_reg_step"):
             await dokon_reg_message(update, context)
         elif context.user_data.get("add_step"):
             await dokon_add_message(update, context)
+        elif context.user_data.get("kuryer_step"):
+            await kuryer_reg_message(update, context)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     return app
+
+# ============================================================
+# 2-BOSQICH: KURYER PANELI
+# ============================================================
+# Kuryer: ro'yxatdan o'tadi -> transport tanlaydi -> buyurtma oladi
+# -> do'kondan oldim -> yoldaman -> yetkazdim -> pulini ko'radi
+# Do'konchi qabul qilgan buyurtma (holat=qabul_qilindi) kuryerga chiqadi.
+
+KURYERLAR = {}  # user_id -> {ism, telefon, transport, online, tasdiqlandi, rasm_bor, yetkazgan, daromad}
+
+def kuryer_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Kuryer bo'lib ro'yxatdan o'tish", callback_data="kuryer_reg")],
+        [InlineKeyboardButton("🟢 Ishga chiqish / 🔴 To'xtatish", callback_data="kuryer_toggle")],
+        [InlineKeyboardButton("📦 Bo'sh buyurtmalar", callback_data="kuryer_free")],
+        [InlineKeyboardButton("🚀 Mening faol buyurtmam", callback_data="kuryer_active")],
+        [InlineKeyboardButton("💰 Mening daromadim", callback_data="kuryer_money")],
+        [InlineKeyboardButton("⬅️ Asosiy menyu", callback_data="back_main")],
+    ])
+
+def kuryer_transport_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚶 Piyoda - rasm shart emas", callback_data="kuryer_tr_Piyoda")],
+        [InlineKeyboardButton("🚲 Velosiped", callback_data="kuryer_tr_Velosiped")],
+        [InlineKeyboardButton("🛵 Moped / Skuter", callback_data="kuryer_tr_Moped")],
+        [InlineKeyboardButton("🚗 Avtomobil", callback_data="kuryer_tr_Avtomobil")],
+        [InlineKeyboardButton("⬅️ Orqaga", callback_data="role_kuryer")],
+    ])
+
+def delivery_fee_for(transport):
+    # Transportga qarab yetkazib berish narxi (1-5 km uchun o'rtacha)
+    return {"Piyoda": 10000, "Velosiped": 12000, "Moped": 13000, "Avtomobil": 15000}.get(transport, 10000)
+
+async def kuryer_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if uid in KURYERLAR:
+        k = KURYERLAR[uid]
+        await q.edit_message_text(
+            f"🛵 <b>{k['ism']}</b>\nTransport: {k['transport']}\nTelefon: {k['telefon']}\nHolat: {'🟢 Ishda' if k.get('online') else '🔴 Damda'}\nTasdiq: {'✅ Tasdiqlangan' if k.get('tasdiqlandi') else '⏳ Tasdiqlanmoqda'}\nYetkazgan: {k.get('yetkazgan',0)} ta\nDaromad: {k.get('daromad',0):,} so'm",
+            parse_mode="HTML", reply_markup=kuryer_menu()
+        )
+    else:
+        await q.edit_message_text(
+            "🛵 <b>Kuryer paneli</b>\n\nAvval ro'yxatdan o'ting.\n\nKerak: Ism, Telefon, Transport turi\nPiyodadan boshqalar uchun transport rasmi + admin tasdiqi kerak.",
+            parse_mode="HTML", reply_markup=kuryer_menu()
+        )
+
+async def kuryer_reg_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["kuryer_step"] = "ism"
+    await q.edit_message_text("📝 <b>Kuryer ro'yxati</b>\n\n1-qadam: Ismingizni yozing.\nMasalan: <i>Farrux</i>", parse_mode="HTML")
+
+async def kuryer_transport_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    tr = q.data.replace("kuryer_tr_", "")
+    context.user_data["kuryer_transport"] = tr
+    if tr == "Piyoda":
+        # Piyoda - rasm shart emas, darhol saqlash
+        uid = q.from_user.id
+        KURYERLAR[uid] = {"ism": context.user_data.get("kuryer_ism"), "telefon": context.user_data.get("kuryer_telefon"), "transport": tr, "online": False, "tasdiqlandi": True, "rasm_bor": False, "yetkazgan": 0, "daromad": 0}
+        context.user_data["kuryer_step"] = None
+        await q.edit_message_text(f"✅ Ro'yxatdan o'tdingiz!\n\n🛵 {context.user_data.get('kuryer_ism')} - {tr}\nEndi 🟢 Ishga chiqish ni bosing.", reply_markup=kuryer_menu())
+    else:
+        context.user_data["kuryer_step"] = "rasm"
+        await q.edit_message_text(f"Transport: <b>{tr}</b>\n\nEndi transport rasmini yuboring 📸\n(Moped / Velosiped / Avtomobil uchun rasm shart, admin tasdiqlaydi)", parse_mode="HTML")
+
+async def kuryer_reg_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    step = context.user_data.get("kuryer_step")
+    if not step:
+        return
+    text = (update.message.text or "").strip()
+    if step == "ism":
+        context.user_data["kuryer_ism"] = text
+        context.user_data["kuryer_step"] = "telefon"
+        await update.message.reply_text("2-qadam: Telefon raqamingizni yozing.\nMasalan: +998 90 123 45 67")
+    elif step == "telefon":
+        context.user_data["kuryer_telefon"] = text
+        context.user_data["kuryer_step"] = "transport"
+        await update.message.reply_text("3-qadam: Transport turini tanlang:", reply_markup=kuryer_transport_menu())
+
+async def kuryer_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Transport rasmi kelsa
+    if context.user_data.get("kuryer_step") != "rasm":
+        return
+    uid = update.message.from_user.id
+    tr = context.user_data.get("kuryer_transport", "Moped")
+    KURYERLAR[uid] = {"ism": context.user_data.get("kuryer_ism"), "telefon": context.user_data.get("kuryer_telefon"), "transport": tr, "online": False, "tasdiqlandi": False, "rasm_bor": True, "yetkazgan": 0, "daromad": 0}
+    context.user_data["kuryer_step"] = None
+    await update.message.reply_text(f"✅ Rasm qabul qilindi!\n\n🛵 {context.user_data.get('kuryer_ism')} - {tr}\nAriza adminga tushdi. Admin tasdiqlagach ishga chiqasiz. Hozircha test rejimida ishlash ochiq.", reply_markup=kuryer_menu())
+
+async def kuryer_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if uid not in KURYERLAR:
+        await q.edit_message_text("Avval ro'yxatdan o'ting.", reply_markup=kuryer_menu())
+        return
+    KURYERLAR[uid]["online"] = not KURYERLAR[uid].get("online", False)
+    hol = "🟢 Ishga chiqdingiz - endi buyurtmalar ko'rinadi" if KURYERLAR[uid]["online"] else "🔴 Ishdan to'xtadingiz"
+    await q.edit_message_text(hol, reply_markup=kuryer_menu())
+
+async def kuryer_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if uid not in KURYERLAR or not KURYERLAR[uid].get("online"):
+        await q.edit_message_text("Avval ro'yxatdan o'tib, 🟢 Ishga chiqish ni bosing.", reply_markup=kuryer_menu())
+        return
+    free = [(k, v) for k, v in BUYURTMALAR.items() if v.get("holat") == "qabul_qilindi" and not v.get("kuryer_id")]
+    if not free:
+        await q.edit_message_text("📦 Hozircha bo'sh buyurtma yo'q. Birozdan keyin yana tekshiring.", reply_markup=kuryer_menu())
+        return
+    txt = "📦 <b>Bo'sh buyurtmalar (do'kon qabul qilgan):</b>\n\n"
+    kb = []
+    fee = delivery_fee_for(KURYERLAR[uid]["transport"])
+    for k, v in free:
+        txt += f"#{k} - {v.get('tovarlar','')} - {v.get('summa',0):,} so'm\nYetkazib berish: {fee:,} so'm\n\n"
+        kb.append([InlineKeyboardButton(f"✅ Olish #{k}", callback_data=f"kuryer_take_{k}")])
+    kb.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="role_kuryer")])
+    await q.edit_message_text(txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+
+async def kuryer_take(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    oid = int(q.data.replace("kuryer_take_", ""))
+    if oid not in BUYURTMALAR:
+        await q.edit_message_text("Buyurtma topilmadi.", reply_markup=kuryer_menu())
+        return
+    if BUYURTMALAR[oid].get("kuryer_id"):
+        await q.edit_message_text("Bu buyurtmani boshqa kuryer olib bo'libdi.", reply_markup=kuryer_menu())
+        return
+    BUYURTMALAR[oid]["kuryer_id"] = uid
+    BUYURTMALAR[oid]["holat"] = "kuryerda"
+    fee = delivery_fee_for(KURYERLAR[uid]["transport"])
+    BUYURTMALAR[oid]["yetkazish_narxi"] = fee
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏪 Do'kondan oldim", callback_data=f"kuryer_status_oldim_{oid}")],
+        [InlineKeyboardButton("⬅️ Orqaga", callback_data="role_kuryer")],
+    ])
+    await q.edit_message_text(f"✅ Buyurtma #{oid} sizda!\n\n1. Do'konga boring\n2. Mahsulotni oling\n3. 'Do'kondan oldim' ni bosing\n\nYetkazib berish: {fee:,} so'm", reply_markup=kb)
+
+async def kuryer_active(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    active = [(k, v) for k, v in BUYURTMALAR.items() if v.get("kuryer_id") == uid and v.get("holat") in ("kuryerda", "oldim", "yoldaman")]
+    if not active:
+        await q.edit_message_text("Faol buyurtmangiz yo'q.", reply_markup=kuryer_menu())
+        return
+    k, v = active[0]
+    holat = v.get("holat")
+    if holat == "kuryerda":
+        btn = [InlineKeyboardButton("🏪 Do'kondan oldim", callback_data=f"kuryer_status_oldim_{k}")]
+    elif holat == "oldim":
+        btn = [InlineKeyboardButton("🚀 Yoldaman - mijozga ketyapman", callback_data=f"kuryer_status_yoldaman_{k}")]
+    else:
+        btn = [InlineKeyboardButton("✅ Yetkazdim", callback_data=f"kuryer_status_yetkazdim_{k}")]
+    await q.edit_message_text(f"🚀 <b>Faol buyurtma #{k}</b>\n\n{v.get('tovarlar','')} - {v.get('summa',0):,} so'm\nHolat: {holat}\nYetkazib berish: {v.get('yetkazish_narxi',0):,} so'm", parse_mode="HTML", reply_markup=InlineKeyboardMarkup([btn, [InlineKeyboardButton("⬅️ Orqaga", callback_data="role_kuryer")]]))
+
+async def kuryer_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    # kuryer_status_oldim_1 / yoldaman_1 / yetkazdim_1
+    parts = q.data.split("_")  # ['kuryer','status','oldim','1']
+    action = parts[2]
+    oid = int(parts[3])
+    uid = q.from_user.id
+    if oid not in BUYURTMALAR:
+        await q.edit_message_text("Buyurtma topilmadi.", reply_markup=kuryer_menu())
+        return
+    if action == "oldim":
+        BUYURTMALAR[oid]["holat"] = "oldim"
+        await q.edit_message_text(f"🏪 Buyurtma #{oid} do'kondan olindi.\nEndi mijozga boring.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Yoldaman", callback_data=f"kuryer_status_yoldaman_{oid}")]]))
+    elif action == "yoldaman":
+        BUYURTMALAR[oid]["holat"] = "yoldaman"
+        await q.edit_message_text(f"🚀 Buyurtma #{oid} - yoldasiz.\nYetkazgach 'Yetkazdim' ni bosing.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yetkazdim", callback_data=f"kuryer_status_yetkazdim_{oid}")]]))
+    elif action == "yetkazdim":
+        BUYURTMALAR[oid]["holat"] = "yetkazildi"
+        fee = BUYURTMALAR[oid].get("yetkazish_narxi", 10000)
+        if uid in KURYERLAR:
+            KURYERLAR[uid]["yetkazgan"] = KURYERLAR[uid].get("yetkazgan", 0) + 1
+            KURYERLAR[uid]["daromad"] = KURYERLAR[uid].get("daromad", 0) + fee
+        await q.edit_message_text(f"✅ Buyurtma #{oid} yetkazildi!\n\n💰 Sizga: {fee:,} so'm qo'shildi.", reply_markup=kuryer_menu())
+
+async def kuryer_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    if uid not in KURYERLAR:
+        await q.edit_message_text("Avval ro'yxatdan o'ting.", reply_markup=kuryer_menu())
+        return
+    k = KURYERLAR[uid]
+    await q.edit_message_text(f"💰 <b>Daromad</b>\n\nYetkazgan buyurtma: {k.get('yetkazgan',0)} ta\nJami daromad: {k.get('daromad',0):,} so'm\nTransport: {k['transport']}", parse_mode="HTML", reply_markup=kuryer_menu())
+
+
+async def test_order_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Faqat test uchun: /testbuyurtma yozsa, kuryer ko'rishi uchun 1 ta test buyurtma yaratadi
+    BUYURTMA_ID[0] += 1
+    oid = BUYURTMA_ID[0]
+    BUYURTMALAR[oid] = {"mijoz_id": update.message.from_user.id, "dokon_id": 0, "tovarlar": "Test - Lag'mon 1 ta", "summa": 35000, "holat": "qabul_qilindi", "kuryer_id": None}
+    await update.message.reply_text(f"🧪 Test buyurtma yaratildi: #{oid}\n\nEndi Kuryer paneli -> 📦 Bo'sh buyurtmalar ni bosing, shu buyurtma chiqishi kerak.")
+
 
 
 # ---------- RENDER BEPUL WEB SERVICE + UPTIMEROBOT UCHUN - FLASK WEBHOOK ----------
