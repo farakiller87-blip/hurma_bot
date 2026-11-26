@@ -4,10 +4,12 @@
 # To'lov: Click / Payme / Naqd
 # Shahar: Termez + yaqin tumanlar
 
+import asyncio, os, threading
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = "BOT_TOKENINGIZNI_SHU_YERGA_QOYING"
+TOKEN = os.environ.get("BOT_TOKEN", "BOT_TOKENINGIZNI_SHU_YERGA_QOYING")
 
 # ---------- ASOSIY MENYU ----------
 def main_menu():
@@ -259,12 +261,25 @@ async def dokon_stats_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(f"📊 <b>Bugungi savdo</b>\n\nBuyurtmalar: {len(my_orders)} ta\nJami: {total:,} so'm", parse_mode="HTML", reply_markup=dokonchi_menu())
 
 
-def main():
+# ---------- RENDER UCHUN FIX ----------
+# Render Web Service port kutadi, bot esa polling qiladi.
+# Shuning uchun Flask ni alohida threadda yuritamiz, botni asyncio.run bilan yuritamiz.
+
+flask_app = Flask(__name__)
+@flask_app.route("/")
+def home():
+    return "Termez Super Boti ishlayapti ✅"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+async def run_bot():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(back_main, pattern="^back_main$"))
-    # Do'konchi
+    # Dokonchi
     app.add_handler(CallbackQueryHandler(dokon_entry, pattern="^role_dokon$"))
     app.add_handler(CallbackQueryHandler(dokon_reg_start, pattern="^dokon_reg$"))
     app.add_handler(CallbackQueryHandler(dokon_cat_select, pattern="^dokon_cat_"))
@@ -274,11 +289,23 @@ def main():
     app.add_handler(CallbackQueryHandler(dokon_order_action, pattern="^order_(accept|reject)_"))
     app.add_handler(CallbackQueryHandler(dokon_stats_show, pattern="^dokon_stats$"))
     app.add_handler(MessageHandler(filters.LOCATION, location_handler))
-    # Matnli xabarlar: ro'yxat va tovar qo'shish bosqichlari
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, dokon_reg_message))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, dokon_add_message))
+    # MUHIM: 2 ta TEXT handler emas, 1 ta umumiy handler - aks holda 1-xabar 2 marta ishlaydi
+    async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if context.user_data.get("dokon_reg_step"):
+            await dokon_reg_message(update, context)
+        elif context.user_data.get("add_step"):
+            await dokon_add_message(update, context)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     print("Termez Super Boti ishga tushdi... 1-bosqich: Dokonchi paneli tayyor")
-    app.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    # Botni to'xtatmasdan ushlab turamiz
+    await asyncio.Event().wait()
+
+def main():
+    threading.Thread(target=run_flask, daemon=True).start()
+    asyncio.run(run_bot())
 
 if __name__ == "__main__":
     main()
