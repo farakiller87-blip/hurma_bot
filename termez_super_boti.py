@@ -5,7 +5,7 @@
 # Shahar: Termez + yaqin tumanlar
 
 import os, asyncio, threading
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -483,6 +483,7 @@ def build_app():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("testbuyurtma", test_order_cmd))
+    app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CallbackQueryHandler(show_category, pattern="^cat_"))
     app.add_handler(CallbackQueryHandler(back_main, pattern="^back_main$"))
     app.add_handler(CallbackQueryHandler(dokon_entry, pattern="^role_dokon$"))
@@ -723,6 +724,63 @@ async def test_order_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+# ============================================================
+# 3-BOSQICH: ADMIN PANELI
+# ============================================================
+# Kompyuterdan: https://hurma-bot.onrender.com/admin
+# Telegramda: /admin
+# Faqat ko'rish uchun - tasdiqlash keyingi versiyada.
+
+def admin_stats():
+    orders = list(BUYURTMALAR.values())
+    total_buyurtma = sum([o.get("summa",0) for o in orders])
+    total_yetkazish = sum([o.get("yetkazish_narxi",0) for o in orders if o.get("holat")=="yetkazildi"])
+    return {
+        "dokonlar": len(DOKONCHILAR),
+        "kuryerlar": len(KURYERLAR),
+        "tovarlar": len(TOVARLAR),
+        "buyurtmalar": len(orders),
+        "yangi": len([o for o in orders if o.get("holat")=="yangi"]),
+        "qabul": len([o for o in orders if o.get("holat")=="qabul_qilindi"]),
+        "yolda": len([o for o in orders if o.get("holat") in ("kuryerda","oldim","yoldaman")]),
+        "yetkazildi": len([o for o in orders if o.get("holat")=="yetkazildi"]),
+        "rad": len([o for o in orders if o.get("holat")=="rad_etildi"]),
+        "jami_summa": total_buyurtma,
+        "jami_yetkazish": total_yetkazish,
+        "kuryer_daromad": sum([k.get("daromad",0) for k in KURYERLAR.values()]),
+        "dokonlar_list": [{"id": str(k), "nomi": v.get("dokon_nomi",""), "kat": v.get("kategoriya",""), "tel": v.get("telefon",""), "tasdiq": bool(v.get("tasdiqlandi"))} for k,v in DOKONCHILAR.items()],
+        "kuryerlar_list": [{"id": str(k), "ism": v.get("ism",""), "tel": v.get("telefon",""), "tr": v.get("transport",""), "online": bool(v.get("online")), "yetkazgan": v.get("yetkazgan",0), "daromad": v.get("daromad",0)} for k,v in KURYERLAR.items()],
+        "buyurtmalar_list": [{"id": str(k), "tovar": v.get("tovarlar",""), "summa": v.get("summa",0), "holat": v.get("holat",""), "kuryer": str(v.get("kuryer_id") or "-")} for k,v in BUYURTMALAR.items()],
+    }
+
+def admin_html():
+    s = admin_stats()
+    def row_dokon(d):
+        return f"<tr><td>{d['id']}</td><td>{d['nomi']}</td><td>{d['kat']}</td><td>{d['tel']}</td><td>{'✅' if d['tasdiq'] else '⏳'}</td></tr>"
+    def row_kuryer(k):
+        return f"<tr><td>{k['ism']}</td><td>{k['tel']}</td><td>{k['tr']}</td><td>{'🟢' if k['online'] else '🔴'}</td><td>{k['yetkazgan']}</td><td>{k['daromad']:,} so'm</td></tr>"
+    def row_order(o):
+        return f"<tr><td>#{o['id']}</td><td>{o['tovar']}</td><td>{o['summa']:,} so'm</td><td>{o['holat']}</td><td>{o['kuryer']}</td></tr>"
+    return f"""<!DOCTYPE html><html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Termez Super Boti - Admin</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:1000px;margin:0 auto;padding:16px;background:#f6f6f6}}h1{{font-size:22px}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}}.card{{background:#fff;padding:14px;border-radius:12px;box-shadow:0 1px 4px #0001}}.card b{{font-size:22px;display:block}}table{{width:100%;background:#fff;border-collapse:collapse;margin:12px 0;border-radius:10px;overflow:hidden}}th,td{{padding:8px;border-bottom:1px solid #eee;text-align:left;font-size:14px}}button{{padding:10px 16px;border:0;border-radius:10px;background:#000;color:#fff;cursor:pointer}}</style></head>
+<body><h1>📊 Termez Super Boti - Admin panel</h1><button onclick="location.reload()">🔄 Yangilash</button>
+<div class="cards">
+<div class="card">Do'konlar<b>{s['dokonlar']}</b></div><div class="card">Kuryerlar<b>{s['kuryerlar']}</b></div><div class="card">Tovarlar<b>{s['tovarlar']}</b></div><div class="card">Buyurtmalar<b>{s['buyurtmalar']}</b></div>
+<div class="card">Jami savdo<b>{s['jami_summa']:,} so'm</b></div><div class="card">Yetkazish puli<b>{s['jami_yetkazish']:,} so'm</b></div><div class="card">Kuryer daromadi<b>{s['kuryer_daromad']:,} so'm</b></div><div class="card">Yetkazildi / Yolda / Yangi<b>{s['yetkazildi']} / {s['yolda']} / {s['yangi']}</b></div>
+</div>
+<h2>🏪 Do'konlar</h2><table><tr><th>ID</th><th>Nomi</th><th>Kategoriya</th><th>Telefon</th><th>Tasdiq</th></tr>{''.join([row_dokon(d) for d in s['dokonlar_list']]) or '<tr><td colspan=5>Hozircha yoq</td></tr>'}</table>
+<h2>🛵 Kuryerlar</h2><table><tr><th>Ism</th><th>Telefon</th><th>Transport</th><th>Online</th><th>Yetkazgan</th><th>Daromad</th></tr>{''.join([row_kuryer(k) for k in s['kuryerlar_list']]) or '<tr><td colspan=6>Hozircha yoq</td></tr>'}</table>
+<h2>🧾 Buyurtmalar</h2><table><tr><th>ID</th><th>Tovar</th><th>Summa</th><th>Holat</th><th>Kuryer ID</th></tr>{''.join([row_order(o) for o in s['buyurtmalar_list']]) or '<tr><td colspan=5>Hozircha yoq</td></tr>'}</table>
+<p style="color:#888;font-size:13px">Eslatma: Render bepul rejimda server uxlab qolsa, ma'lumotlar (dict) tozalanishi mumkin. Keyingi qadam - bazaga (SQLite / Postgres) o'tkazish.</p></body></html>"""
+
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    s = admin_stats()
+    await update.message.reply_text(
+        f"📊 <b>ADMIN</b>\n\n🏪 Do'konlar: {s['dokonlar']}\n🛵 Kuryerlar: {s['kuryerlar']}\n📦 Tovarlar: {s['tovarlar']}\n🧾 Buyurtmalar: {s['buyurtmalar']}\n✅ Yetkazildi: {s['yetkazildi']} | 🚀 Yolda: {s['yolda']} | 🆕 Yangi: {s['yangi']}\n\n💰 Jami savdo: {s['jami_summa']:,} so'm\n🚀 Yetkazish: {s['jami_yetkazish']:,} so'm\n\nKompyuterdan to'liq ko'rish:\nhttps://hurma-bot.onrender.com/admin",
+        parse_mode="HTML"
+    )
+
+
 # ---------- RENDER BEPUL WEB SERVICE + UPTIMEROBOT UCHUN - FLASK WEBHOOK ----------
 # Muammo: PTB ning run_webhook() i GET / ga 404 beradi.
 # UptimeRobot GET / ni tekshiradi, shuning uchun doim "Down" ko'rsatadi.
@@ -737,6 +795,14 @@ telegram_app = None
 @flask_app.route("/", methods=["GET"])
 def health():
     return "Termez Super Boti ishlayapti ✅", 200
+
+@flask_app.route("/admin", methods=["GET"])
+def admin_page():
+    return admin_html(), 200
+
+@flask_app.route("/api/admin", methods=["GET"])
+def admin_api():
+    return jsonify(admin_stats())
 
 @flask_app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
