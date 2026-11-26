@@ -4,7 +4,7 @@
 # To'lov: Click / Payme / Naqd
 # Shahar: Termez + yaqin tumanlar
 
-import os
+import os, asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -294,6 +294,11 @@ def build_app():
     return app
 
 def main():
+    # Python 3.14 da get_event_loop() ishlamaydi, loop ni o'zimiz yaratamiz
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
     app = build_app()
     port = int(os.environ.get("PORT", 10000))
     if WEBHOOK_URL:
